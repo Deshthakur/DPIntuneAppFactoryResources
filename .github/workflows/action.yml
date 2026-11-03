@@ -1,0 +1,25 @@
+name: Setup ADO compatibility
+description: Maps Azure DevOps predefined variables (Build.*, Agent.*) that the IntuneAppFactory scripts expect
+
+runs:
+  using: composite
+  steps:
+    - shell: pwsh
+      run: |
+        $bin = Join-Path $env:RUNNER_TEMP 'binaries'
+        $stg = Join-Path $env:RUNNER_TEMP 'staging'
+
+        # Start every job with clean folders (matters on self-hosted runners)
+        foreach ($d in $bin, $stg) {
+          if (Test-Path $d) { Remove-Item (Join-Path $d '*') -Recurse -Force -ErrorAction SilentlyContinue }
+          else { New-Item -ItemType Directory -Path $d | Out-Null }
+        }
+
+        $map = @{
+          BUILD_SOURCESDIRECTORY          = $env:GITHUB_WORKSPACE
+          BUILD_BINARIESDIRECTORY         = $bin
+          BUILD_ARTIFACTSTAGINGDIRECTORY  = $stg
+          AGENT_TEMPDIRECTORY             = $env:RUNNER_TEMP
+          SYSTEM_DEFAULTWORKINGDIRECTORY  = $env:GITHUB_WORKSPACE
+        }
+        foreach ($k in $map.Keys) { "$k=$($map[$k])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }

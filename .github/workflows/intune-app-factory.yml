@@ -1,0 +1,263 @@
+name: IntuneAppFactory
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'          # Every 6 hours (runs on default branch only)
+  workflow_dispatch:
+    inputs:
+      operationalMode:
+        description: Select operational mode
+        type: choice
+        default: Publish
+        options: [Verify, Package, Publish]
+      archiveMode:
+        description: Archive published apps
+        type: choice
+        default: 'No'
+        options: ['Yes', 'No']
+
+permissions:
+  contents: read
+
+# ADO queues overlapping runs; this does the same
+concurrency:
+  group: intune-app-factory
+  cancel-in-progress: false
+
+# ADO variable group "IntuneAppFactory" -> GitHub repository/environment Variables
+env:
+  TenantID: ${{ vars.TenantID }}
+  ClientID: ${{ vars.ClientID }}
+  ReportWorkspaceID: ${{ vars.ReportWorkspaceID }}
+  ArchiveStorageAccountName: ${{ vars.ArchiveStorageAccountName }}
+  ArchiveContainerName: ${{ vars.ArchiveContainerName }}
+
+# NOTE: schedule runs have no inputs, so defaults are applied inline:
+#   mode    = inputs.operationalMode || 'Publish'
+#   archive = inputs.archiveMode     || 'No'
+
+jobs:
+  # Stage 1: test_environment
+  test_environment:
+    runs-on: windows-latest        # self-hosted: [self-hosted, windows]
+    timeout-minutes: 5
+    outputs:
+      shouldrun: ${{ steps.check_template_files.outputs.shouldrun }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - id: write_variables
+        shell: pwsh
+        run: ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Write-Variable.ps1
+      - id: check_template_files
+        shell: pwsh
+        run: ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Test-TemplatesFolder.ps1
+
+  # Stage 2: prepare_environment
+  prepare_environment:
+    needs: test_environment
+    if: needs.test_environment.outputs.shouldrun == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - id: install_modules
+        shell: pwsh
+        run: ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Install-Modules.ps1
+      - id: cleanup_folders
+        shell: pwsh
+        run: ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Remove-Files.ps1
+
+  # Stage 3: check_app_files (runs in Verify, Package and Publish)
+  check_app_files:
+    needs: prepare_environment
+    runs-on: windows-latest
+    timeout-minutes: 15
+    outputs:
+      shouldrun: ${{ steps.test_app_files.outputs.shouldrun }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - id: test_app_files
+        shell: pwsh
+        env:
+          SA_KEY: ${{ secrets.SA_INTUNEAPPFACTORY_ACCESSKEY }}
+        run: |
+          ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Test-AppFiles.ps1 -Arguments @{
+            ConnectionString = $env:SA_KEY
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AppsProcessList
+          path: ${{ env.BUILD_BINARIESDIRECTORY }}
+          if-no-files-found: ignore
+
+  # Stage 4: check_new_app_version (Package / Publish)
+  check_new_app_version:
+    needs: check_app_files
+    if: needs.check_app_files.outputs.shouldrun == 'true' && (inputs.operationalMode || 'Publish') != 'Verify'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      shouldrun: ${{ steps.test_app_list.outputs.shouldrun }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: AppsProcessList
+          path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsProcessList
+      - id: test_app_list
+        shell: pwsh
+        env:
+          CLIENT_SECRET: ${{ secrets.SP_INTUNEAPPFACTORY_CLIENTSECRET }}
+          SA_KEY: ${{ secrets.SA_INTUNEAPPFACTORY_ACCESSKEY }}
+        run: |
+          ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Test-AppList.ps1 -Arguments @{
+            TenantID               = $env:TenantID
+            ClientID               = $env:ClientID
+            ClientSecret           = $env:CLIENT_SECRET
+            StorageAccountAccessKey = $env:SA_KEY
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AppsDownloadList
+          path: ${{ env.BUILD_BINARIESDIRECTORY }}
+          if-no-files-found: ignore
+
+  # Stage 5: download_new_apps
+  download_new_apps:
+    needs: check_new_app_version
+    if: needs.check_new_app_version.outputs.shouldrun == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 120
+    outputs:
+      shouldrun: ${{ steps.save_installer.outputs.shouldrun }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: AppsDownloadList
+          path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsDownloadList
+      - id: save_installer
+        shell: pwsh
+        env:
+          SA_KEY: ${{ secrets.SA_INTUNEAPPFACTORY_ACCESSKEY }}
+        run: |
+          ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Save-Installer.ps1 -Arguments @{
+            StorageAccountAccessKey = $env:SA_KEY
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AppsPrepareList
+          path: ${{ env.BUILD_BINARIESDIRECTORY }}
+          if-no-files-found: ignore
+
+  # Stage 6: prepare_app_files
+  prepare_app_files:
+    needs: download_new_apps
+    if: needs.download_new_apps.outputs.shouldrun == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      shouldrun: ${{ steps.create_package_folder.outputs.shouldrun }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: AppsPrepareList
+          path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsPrepareList
+      - id: create_package_folder
+        shell: pwsh
+        run: ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Prepare-AppPackageFolder.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AppsPublishList
+          path: ${{ env.BUILD_BINARIESDIRECTORY }}
+          if-no-files-found: ignore
+
+  # Stage 7: archive_apps (only when archiveMode = Yes)
+  archive_apps:
+    needs: prepare_app_files
+    if: needs.prepare_app_files.outputs.shouldrun == 'true' && (inputs.archiveMode || 'No') == 'Yes'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: AppsPublishList
+          path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsPublishList
+      - id: upload_app_archive
+        shell: pwsh
+        env:
+          SA_KEY: ${{ secrets.SA_INTUNEAPPFACTORY_ACCESSKEY }}
+        run: |
+          ./.github/scripts/Invoke-Step.ps1 -Path Scripts/New-AppArchive.ps1 -Arguments @{
+            StorageAccountName = $env:ArchiveStorageAccountName
+            ContainerName      = $env:ArchiveContainerName
+            StorageAccountKey  = $env:SA_KEY
+          }
+
+  # Stage 8: publish_apps (Publish mode only)
+  publish_apps:
+    needs: prepare_app_files
+    if: needs.prepare_app_files.outputs.shouldrun == 'true' && (inputs.operationalMode || 'Publish') == 'Publish'
+    runs-on: windows-latest
+    timeout-minutes: 120
+    # environment: production      # optional: manual approval like ADO
+    outputs:
+      shouldrun: ${{ steps.new_app.outputs.shouldrun }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: AppsPublishList
+          path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsPublishList
+      - id: new_app
+        shell: pwsh
+        env:
+          CLIENT_SECRET: ${{ secrets.SP_INTUNEAPPFACTORY_CLIENTSECRET }}
+          LA_KEY: ${{ secrets.LA_INTUNEAPPFACTORY_PRIMARYKEY }}
+        run: |
+          ./.github/scripts/Invoke-Step.ps1 -Path Scripts/New-Win32App.ps1 -Arguments @{
+            TenantID    = $env:TenantID
+            ClientID    = $env:ClientID
+            ClientSecret = $env:CLIENT_SECRET
+            WorkspaceID = $env:ReportWorkspaceID
+            SharedKey   = $env:LA_KEY
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AppsPublishedList
+          path: ${{ env.BUILD_BINARIESDIRECTORY }}
+          if-no-files-found: ignore
+
+  # Stage 9: assign_apps
+  assign_apps:
+    needs: publish_apps
+    if: needs.publish_apps.outputs.shouldrun == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: AppsPublishedList
+          path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsPublishedList
+      - id: assign_app
+        shell: pwsh
+        env:
+          CLIENT_SECRET: ${{ secrets.SP_INTUNEAPPFACTORY_CLIENTSECRET }}
+        run: |
+          ./.github/scripts/Invoke-Step.ps1 -Path Scripts/New-AppAssignment.ps1 -Arguments @{
+            TenantID     = $env:TenantID
+            ClientID     = $env:ClientID
+            ClientSecret = $env:CLIENT_SECRET
+          }
