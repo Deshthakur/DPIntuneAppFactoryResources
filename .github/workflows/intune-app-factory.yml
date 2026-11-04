@@ -1,8 +1,21 @@
+# Save as: .github/workflows/intune-app-factory.yml
+#
+# Required GitHub Variables (Settings > Secrets and variables > Actions > Variables):
+#   TENANTID, CLIENTID, REPORTWORKSPACEID, ARCHIVESTORAGEACCOUNTNAME, ARCHIVECONTAINERNAME
+# Required GitHub Secrets (names cannot contain "-"):
+#   SA_ACCESSKEY      (was SA-IntuneAppFactory-AccessKey)
+#   SP_CLIENTSECRET   (was SP-IntuneAppFactory-ClientSecret)
+#   LA_PRIMARYKEY     (was LA-IntuneAppFactory-PrimaryKey)
+#
+# Runner: self-hosted Windows runner (closest to the ADO agent pool).
+# If you switch to windows-latest, every job starts on a fresh VM, so
+# Install-Modules.ps1 must run inside each job that needs the modules.
+
 name: IntuneAppFactory
 
 on:
   schedule:
-    - cron: '0 */6 * * *'          # Every 6 hours (runs on default branch only)
+    - cron: '0 */6 * * *'   # UTC, runs on default branch only
   workflow_dispatch:
     inputs:
       operationalMode:
@@ -19,245 +32,217 @@ on:
 permissions:
   contents: read
 
-# ADO queues overlapping runs; this does the same
 concurrency:
   group: intune-app-factory
   cancel-in-progress: false
 
-# ADO variable group "IntuneAppFactory" -> GitHub repository/environment Variables
+# Same env var names the ADO agent exposed, so the scripts need fewer edits
 env:
-  TenantID: ${{ vars.TenantID }}
-  ClientID: ${{ vars.ClientID }}
-  ReportWorkspaceID: ${{ vars.ReportWorkspaceID }}
-  ArchiveStorageAccountName: ${{ vars.ArchiveStorageAccountName }}
-  ArchiveContainerName: ${{ vars.ArchiveContainerName }}
+  BUILD_SOURCESDIRECTORY: ${{ github.workspace }}
+  BUILD_BINARIESDIRECTORY: ${{ github.workspace }}/binaries
+  BUILD_ARTIFACTSTAGINGDIRECTORY: ${{ github.workspace }}/staging
+  TENANTID: ${{ vars.TENANTID }}
+  CLIENTID: ${{ vars.CLIENTID }}
+  REPORTWORKSPACEID: ${{ vars.REPORTWORKSPACEID }}
+  ARCHIVESTORAGEACCOUNTNAME: ${{ vars.ARCHIVESTORAGEACCOUNTNAME }}
+  ARCHIVECONTAINERNAME: ${{ vars.ARCHIVECONTAINERNAME }}
 
-# NOTE: schedule runs have no inputs, so defaults are applied inline:
-#   mode    = inputs.operationalMode || 'Publish'
-#   archive = inputs.archiveMode     || 'No'
+defaults:
+  run:
+    shell: powershell   # PowerShell@2 in ADO used Windows PowerShell 5.1
 
 jobs:
-  # Stage 1: test_environment
+  # Stage 1
   test_environment:
-    runs-on: windows-latest        # self-hosted: [self-hosted, windows]
+    runs-on: [self-hosted, windows]
     timeout-minutes: 5
     outputs:
       shouldrun: ${{ steps.check_template_files.outputs.shouldrun }}
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-      - id: write_variables
-        shell: pwsh
-        run: ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Write-Variable.ps1
-      - id: check_template_files
-        shell: pwsh
-        run: ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Test-TemplatesFolder.ps1
+      - name: Write-Variable
+        run: ./Scripts/Write-Variable.ps1
+      - name: Test-TemplatesFolder
+        id: check_template_files
+        run: ./Scripts/Test-TemplatesFolder.ps1
 
-  # Stage 2: prepare_environment
+  # Stage 2
   prepare_environment:
     needs: test_environment
     if: needs.test_environment.outputs.shouldrun == 'true'
-    runs-on: windows-latest
+    runs-on: [self-hosted, windows]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-      - id: install_modules
-        shell: pwsh
-        run: ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Install-Modules.ps1
-      - id: cleanup_folders
-        shell: pwsh
-        run: ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Remove-Files.ps1
+      - name: Install-Modules
+        run: ./Scripts/Install-Modules.ps1
+      - name: Remove-Files
+        run: ./Scripts/Remove-Files.ps1
 
-  # Stage 3: check_app_files (runs in Verify, Package and Publish)
+  # Stage 3
   check_app_files:
-    needs: prepare_environment
-    runs-on: windows-latest
+    needs: [test_environment, prepare_environment]
+    runs-on: [self-hosted, windows]
     timeout-minutes: 15
     outputs:
       shouldrun: ${{ steps.test_app_files.outputs.shouldrun }}
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-      - id: test_app_files
-        shell: pwsh
+      - name: Create folders
+        run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
+      - name: Test-AppFiles
+        id: test_app_files
         env:
-          SA_KEY: ${{ secrets.SA_INTUNEAPPFACTORY_ACCESSKEY }}
-        run: |
-          ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Test-AppFiles.ps1 -Arguments @{
-            ConnectionString = $env:SA_KEY
-          }
+          SA_ACCESSKEY: ${{ secrets.SA_ACCESSKEY }}
+        run: ./Scripts/Test-AppFiles.ps1 -ConnectionString $env:SA_ACCESSKEY
       - uses: actions/upload-artifact@v4
         with:
           name: AppsProcessList
           path: ${{ env.BUILD_BINARIESDIRECTORY }}
           if-no-files-found: ignore
 
-  # Stage 4: check_new_app_version (Package / Publish)
+  # Stage 4
   check_new_app_version:
     needs: check_app_files
     if: needs.check_app_files.outputs.shouldrun == 'true' && (inputs.operationalMode || 'Publish') != 'Verify'
-    runs-on: windows-latest
+    runs-on: [self-hosted, windows]
     timeout-minutes: 30
     outputs:
       shouldrun: ${{ steps.test_app_list.outputs.shouldrun }}
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - name: Create folders
+        run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
       - uses: actions/download-artifact@v4
         with:
           name: AppsProcessList
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsProcessList
-      - id: test_app_list
-        shell: pwsh
+      - name: Test-AppList
+        id: test_app_list
         env:
-          CLIENT_SECRET: ${{ secrets.SP_INTUNEAPPFACTORY_CLIENTSECRET }}
-          SA_KEY: ${{ secrets.SA_INTUNEAPPFACTORY_ACCESSKEY }}
-        run: |
-          ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Test-AppList.ps1 -Arguments @{
-            TenantID               = $env:TenantID
-            ClientID               = $env:ClientID
-            ClientSecret           = $env:CLIENT_SECRET
-            StorageAccountAccessKey = $env:SA_KEY
-          }
+          SP_CLIENTSECRET: ${{ secrets.SP_CLIENTSECRET }}
+          SA_ACCESSKEY: ${{ secrets.SA_ACCESSKEY }}
+        run: ./Scripts/Test-AppList.ps1 -TenantID $env:TENANTID -ClientID $env:CLIENTID -ClientSecret $env:SP_CLIENTSECRET -StorageAccountAccessKey $env:SA_ACCESSKEY
       - uses: actions/upload-artifact@v4
         with:
           name: AppsDownloadList
           path: ${{ env.BUILD_BINARIESDIRECTORY }}
           if-no-files-found: ignore
 
-  # Stage 5: download_new_apps
+  # Stage 5
   download_new_apps:
     needs: check_new_app_version
-    if: needs.check_new_app_version.outputs.shouldrun == 'true'
-    runs-on: windows-latest
+    if: needs.check_new_app_version.outputs.shouldrun == 'true' && (inputs.operationalMode || 'Publish') != 'Verify'
+    runs-on: [self-hosted, windows]
     timeout-minutes: 120
     outputs:
       shouldrun: ${{ steps.save_installer.outputs.shouldrun }}
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - name: Create folders
+        run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
       - uses: actions/download-artifact@v4
         with:
           name: AppsDownloadList
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsDownloadList
-      - id: save_installer
-        shell: pwsh
+      - name: Save-Installer
+        id: save_installer
         env:
-          SA_KEY: ${{ secrets.SA_INTUNEAPPFACTORY_ACCESSKEY }}
-        run: |
-          ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Save-Installer.ps1 -Arguments @{
-            StorageAccountAccessKey = $env:SA_KEY
-          }
+          SA_ACCESSKEY: ${{ secrets.SA_ACCESSKEY }}
+        run: ./Scripts/Save-Installer.ps1 -StorageAccountAccessKey $env:SA_ACCESSKEY
       - uses: actions/upload-artifact@v4
         with:
           name: AppsPrepareList
           path: ${{ env.BUILD_BINARIESDIRECTORY }}
           if-no-files-found: ignore
 
-  # Stage 6: prepare_app_files
+  # Stage 6
   prepare_app_files:
     needs: download_new_apps
-    if: needs.download_new_apps.outputs.shouldrun == 'true'
-    runs-on: windows-latest
+    if: needs.download_new_apps.outputs.shouldrun == 'true' && (inputs.operationalMode || 'Publish') != 'Verify'
+    runs-on: [self-hosted, windows]
     timeout-minutes: 60
     outputs:
       shouldrun: ${{ steps.create_package_folder.outputs.shouldrun }}
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - name: Create folders
+        run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
       - uses: actions/download-artifact@v4
         with:
           name: AppsPrepareList
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsPrepareList
-      - id: create_package_folder
-        shell: pwsh
-        run: ./.github/scripts/Invoke-Step.ps1 -Path Scripts/Prepare-AppPackageFolder.ps1
+      - name: Prepare-AppPackageFolder
+        id: create_package_folder
+        run: ./Scripts/Prepare-AppPackageFolder.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: AppsPublishList
           path: ${{ env.BUILD_BINARIESDIRECTORY }}
           if-no-files-found: ignore
 
-  # Stage 7: archive_apps (only when archiveMode = Yes)
+  # Stage 7 (only when archiveMode = Yes)
   archive_apps:
     needs: prepare_app_files
-    if: needs.prepare_app_files.outputs.shouldrun == 'true' && (inputs.archiveMode || 'No') == 'Yes'
-    runs-on: windows-latest
+    if: needs.prepare_app_files.outputs.shouldrun == 'true' && (inputs.archiveMode || 'No') == 'Yes' && (inputs.operationalMode || 'Publish') != 'Verify'
+    runs-on: [self-hosted, windows]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - name: Create folders
+        run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
       - uses: actions/download-artifact@v4
         with:
           name: AppsPublishList
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsPublishList
-      - id: upload_app_archive
-        shell: pwsh
+      - name: New-AppArchive
         env:
-          SA_KEY: ${{ secrets.SA_INTUNEAPPFACTORY_ACCESSKEY }}
-        run: |
-          ./.github/scripts/Invoke-Step.ps1 -Path Scripts/New-AppArchive.ps1 -Arguments @{
-            StorageAccountName = $env:ArchiveStorageAccountName
-            ContainerName      = $env:ArchiveContainerName
-            StorageAccountKey  = $env:SA_KEY
-          }
+          SA_ACCESSKEY: ${{ secrets.SA_ACCESSKEY }}
+        run: ./Scripts/New-AppArchive.ps1 -StorageAccountName $env:ARCHIVESTORAGEACCOUNTNAME -ContainerName $env:ARCHIVECONTAINERNAME -StorageAccountKey $env:SA_ACCESSKEY
 
-  # Stage 8: publish_apps (Publish mode only)
+  # Stage 8 (only in Publish mode)
   publish_apps:
     needs: prepare_app_files
     if: needs.prepare_app_files.outputs.shouldrun == 'true' && (inputs.operationalMode || 'Publish') == 'Publish'
-    runs-on: windows-latest
+    runs-on: [self-hosted, windows]
     timeout-minutes: 120
-    # environment: production      # optional: manual approval like ADO
     outputs:
       shouldrun: ${{ steps.new_app.outputs.shouldrun }}
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - name: Create folders
+        run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
       - uses: actions/download-artifact@v4
         with:
           name: AppsPublishList
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsPublishList
-      - id: new_app
-        shell: pwsh
+      - name: New-Win32App
+        id: new_app
         env:
-          CLIENT_SECRET: ${{ secrets.SP_INTUNEAPPFACTORY_CLIENTSECRET }}
-          LA_KEY: ${{ secrets.LA_INTUNEAPPFACTORY_PRIMARYKEY }}
-        run: |
-          ./.github/scripts/Invoke-Step.ps1 -Path Scripts/New-Win32App.ps1 -Arguments @{
-            TenantID    = $env:TenantID
-            ClientID    = $env:ClientID
-            ClientSecret = $env:CLIENT_SECRET
-            WorkspaceID = $env:ReportWorkspaceID
-            SharedKey   = $env:LA_KEY
-          }
+          SP_CLIENTSECRET: ${{ secrets.SP_CLIENTSECRET }}
+          LA_PRIMARYKEY: ${{ secrets.LA_PRIMARYKEY }}
+        run: ./Scripts/New-Win32App.ps1 -TenantID $env:TENANTID -ClientID $env:CLIENTID -ClientSecret $env:SP_CLIENTSECRET -WorkspaceID $env:REPORTWORKSPACEID -SharedKey $env:LA_PRIMARYKEY
       - uses: actions/upload-artifact@v4
         with:
           name: AppsPublishedList
           path: ${{ env.BUILD_BINARIESDIRECTORY }}
           if-no-files-found: ignore
 
-  # Stage 9: assign_apps
+  # Stage 9 (only in Publish mode)
   assign_apps:
     needs: publish_apps
-    if: needs.publish_apps.outputs.shouldrun == 'true'
-    runs-on: windows-latest
+    if: needs.publish_apps.outputs.shouldrun == 'true' && (inputs.operationalMode || 'Publish') == 'Publish'
+    runs-on: [self-hosted, windows]
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - name: Create folders
+        run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
       - uses: actions/download-artifact@v4
         with:
           name: AppsPublishedList
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsPublishedList
-      - id: assign_app
-        shell: pwsh
+      - name: New-AppAssignment
         env:
-          CLIENT_SECRET: ${{ secrets.SP_INTUNEAPPFACTORY_CLIENTSECRET }}
-        run: |
-          ./.github/scripts/Invoke-Step.ps1 -Path Scripts/New-AppAssignment.ps1 -Arguments @{
-            TenantID     = $env:TenantID
-            ClientID     = $env:ClientID
-            ClientSecret = $env:CLIENT_SECRET
-          }
+          SP_CLIENTSECRET: ${{ secrets.SP_CLIENTSECRET }}
+        run: ./Scripts/New-AppAssignment.ps1 -TenantID $env:TENANTID -ClientID $env:CLIENTID -ClientSecret $env:SP_CLIENTSECRET
