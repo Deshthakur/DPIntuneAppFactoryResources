@@ -59,7 +59,7 @@ jobs:
     outputs:
       shouldrun: ${{ steps.check_template_files.outputs.shouldrun }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Write-Variable
         run: ./Scripts/Write-Variable.ps1
       - name: Test-TemplatesFolder
@@ -73,7 +73,7 @@ jobs:
     runs-on: [self-hosted, windows]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install-Modules
         run: ./Scripts/Install-Modules.ps1
       - name: Remove-Files
@@ -87,7 +87,7 @@ jobs:
     outputs:
       shouldrun: ${{ steps.test_app_files.outputs.shouldrun }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Create folders
         run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
       - name: Test-AppFiles
@@ -95,7 +95,7 @@ jobs:
         env:
           SA_ACCESSKEY: ${{ secrets.SA_ACCESSKEY }}
         run: ./Scripts/Test-AppFiles.ps1 -ConnectionString $env:SA_ACCESSKEY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: AppsProcessList
           path: ${{ env.BUILD_BINARIESDIRECTORY }}
@@ -110,10 +110,10 @@ jobs:
     outputs:
       shouldrun: ${{ steps.test_app_list.outputs.shouldrun }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Create folders
         run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: AppsProcessList
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsProcessList
@@ -123,7 +123,7 @@ jobs:
           SP_CLIENTSECRET: ${{ secrets.SP_CLIENTSECRET }}
           SA_ACCESSKEY: ${{ secrets.SA_ACCESSKEY }}
         run: ./Scripts/Test-AppList.ps1 -TenantID $env:TENANTID -ClientID $env:CLIENTID -ClientSecret $env:SP_CLIENTSECRET -StorageAccountAccessKey $env:SA_ACCESSKEY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: AppsDownloadList
           path: ${{ env.BUILD_BINARIESDIRECTORY }}
@@ -138,10 +138,10 @@ jobs:
     outputs:
       shouldrun: ${{ steps.save_installer.outputs.shouldrun }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Create folders
         run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: AppsDownloadList
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsDownloadList
@@ -150,7 +150,7 @@ jobs:
         env:
           SA_ACCESSKEY: ${{ secrets.SA_ACCESSKEY }}
         run: ./Scripts/Save-Installer.ps1 -StorageAccountAccessKey $env:SA_ACCESSKEY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: AppsPrepareList
           path: ${{ env.BUILD_BINARIESDIRECTORY }}
@@ -165,17 +165,17 @@ jobs:
     outputs:
       shouldrun: ${{ steps.create_package_folder.outputs.shouldrun }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Create folders
         run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: AppsPrepareList
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsPrepareList
       - name: Prepare-AppPackageFolder
         id: create_package_folder
         run: ./Scripts/Prepare-AppPackageFolder.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: AppsPublishList
           path: ${{ env.BUILD_BINARIESDIRECTORY }}
@@ -188,10 +188,10 @@ jobs:
     runs-on: [self-hosted, windows]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Create folders
         run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: AppsPublishList
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsPublishList
@@ -209,10 +209,10 @@ jobs:
     outputs:
       shouldrun: ${{ steps.new_app.outputs.shouldrun }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Create folders
         run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: AppsPublishList
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsPublishList
@@ -222,7 +222,7 @@ jobs:
           SP_CLIENTSECRET: ${{ secrets.SP_CLIENTSECRET }}
           LA_PRIMARYKEY: ${{ secrets.LA_PRIMARYKEY }}
         run: ./Scripts/New-Win32App.ps1 -TenantID $env:TENANTID -ClientID $env:CLIENTID -ClientSecret $env:SP_CLIENTSECRET -WorkspaceID $env:REPORTWORKSPACEID -SharedKey $env:LA_PRIMARYKEY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: AppsPublishedList
           path: ${{ env.BUILD_BINARIESDIRECTORY }}
@@ -235,10 +235,10 @@ jobs:
     runs-on: [self-hosted, windows]
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Create folders
         run: New-Item -ItemType Directory -Force -Path $env:BUILD_BINARIESDIRECTORY, $env:BUILD_ARTIFACTSTAGINGDIRECTORY | Out-Null
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: AppsPublishedList
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/AppsPublishedList
